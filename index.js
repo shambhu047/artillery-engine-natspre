@@ -120,7 +120,7 @@ class NatsPreEngine {
                 params,
                 context,
                 ee,
-                function done(err) {
+                (err) => {
                     if (err) {
                         debug(err);
                         return callback(err, context);
@@ -229,7 +229,7 @@ class NatsPreEngine {
                 params,
                 context,
                 ee,
-                function done(err) {
+                (err) => {
                     if (err) {
                         debug(err);
                         return callback(err, context);
