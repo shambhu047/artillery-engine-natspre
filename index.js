@@ -194,8 +194,6 @@ class NatsPreEngine {
     }
 
     createReqHandler(rs, ee, opts) {
-        console.log("Request handler")
-
         return (context, callback) => {
 
             context.funcs.$increment = this.increment;
@@ -238,8 +236,8 @@ class NatsPreEngine {
                     ee.emit('request');
                     const startedAt = process.hrtime();
 
-                    console.log("Requesting to: " + pubParams.Subject)
-                    console.log("Message: " + pubParams.Payload)
+                    debug("Requesting to: " + pubParams.Subject)
+                    debug("Message: " + pubParams.Payload)
 
                     const natsHeaders = nats.headers()
                     Object.keys(pubParams.Headers).forEach(k => {
@@ -252,7 +250,7 @@ class NatsPreEngine {
                     }
 
                     try {
-                        console.log("Requesting to: [" + pubParams.Subject + "] Message: [" + pubParams.Payload + "]")
+                        debug("Requesting to: [" + pubParams.Subject + "] Message: [" + pubParams.Payload + "]")
                         context.nc.request(pubParams.Subject, context.sc.encode(pubParams.Payload), requestOptions).then((msg) => {
                             const endedAt = process.hrtime(startedAt);
 
@@ -260,10 +258,12 @@ class NatsPreEngine {
                             const response = NatsEngineUtils.parseSafely(decodedResponse, msg.headers)
 
                             let delta = (endedAt[0] * 1e9) + endedAt[1];
+                            let deltaMillis = delta / 1000000
                             const code = 0
                             ee.emit('response', delta, code, context._uid);
+                            ee.emit('histogram', pubParams.Subject + '_latency', deltaMillis)
 
-                            console.log("Response: " + JSON.stringify(response))
+                            debug("Response: " + JSON.stringify(response))
                             const captureDoneCallback = (err, result) => {
                                 if (result && result.captures) {
                                     // TODO handle matches
@@ -331,7 +331,7 @@ class NatsPreEngine {
 
                     return next(null, initialContext);
                 }).catch((err) => {
-                    console.log("Error")
+                    debug(err)
                     ee.emit('error', err);
                 })
             };
