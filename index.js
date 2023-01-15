@@ -107,7 +107,7 @@ class NatsPreEngine {
             // construct and keep all params to pass it to hooks
             // so that plugins can use it if needed
             const params = _.assign({
-                url: rs.pub.payload,
+                url: rs.pub.subject,
                 pubParams: pubParams,
             }, rs.pub);
 
@@ -149,13 +149,17 @@ class NatsPreEngine {
                             const response = NatsEngineUtils.emptyResponse();
                             const captureDoneCallback = (err, result) => {
                                 if (result && result.captures) {
-                                    // TODO handle matches
-                                    let haveFailedCaptures = _.some(result.captures, (v, k) => v === '');
-                                    if (!haveFailedCaptures) {
-                                        _.each(result.captures, function (v, k) {
-                                            _.set(context.vars, k, v);
-                                        });
+                                    debug("Capture: " + JSON.stringify(result))
+                                    if (result.captures) {
+                                        Object.keys(result.captures).forEach((k) => {
+                                            if (result.captures[k] && !result.captures[k]['failed']) {
+                                                _.set(context.vars, k, result.captures[k]['value'])
+                                            }
+                                        })
                                     }
+
+                                    // FIXME Handle failed captures
+                                    // TODO matches
                                 }
 
                                 const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.pub.afterResponse || []);
@@ -214,7 +218,7 @@ class NatsPreEngine {
             // construct and keep all params to pass it to hooks
             // so that plugins can use it if needed
             const params = _.assign({
-                url: rs.req.payload,
+                url: rs.req.subject,
                 pubParams: pubParams,
             }, rs.req);
 
@@ -266,13 +270,17 @@ class NatsPreEngine {
                             debug("Response: " + JSON.stringify(response))
                             const captureDoneCallback = (err, result) => {
                                 if (result && result.captures) {
-                                    // TODO handle matches
-                                    let haveFailedCaptures = _.some(result.captures, (v, k) => v === '');
-                                    if (!haveFailedCaptures) {
-                                        _.each(result.captures, function (v, k) {
-                                            _.set(context.vars, k, v);
-                                        });
+                                    debug("Capture: " + JSON.stringify(result))
+                                    if (result.captures) {
+                                        Object.keys(result.captures).forEach((k) => {
+                                            if (result.captures[k] && !result.captures[k]['failed']) {
+                                                _.set(context.vars, k, result.captures[k]['value'])
+                                            }
+                                        })
                                     }
+
+                                    // FIXME Handle failed captures
+                                    // TODO matches
                                 }
 
                                 const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.req.afterResponse || []);
