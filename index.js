@@ -8,70 +8,74 @@ const debug = require('debug')('engine:natspre');
 const A = require('async');
 const _ = require('lodash');
 const helpers = require('artillery/core/lib/engine_util');
-
 const nats = require('nats')
 
-const utils = require('./utils');
+const NatsEngineUtils = require('./utils');
 
 
-function NatsEngine(script, ee) {
-    this.script = script;
-    this.ee = ee;
-    this.helpers = helpers;
-    this.config = script.config;
+class NatsPreEngine {
+    constructor(script, ee) {
+        debug("Instantiating NatsPreEngine")
 
-    this.config.processor = this.config.processor || {};
-    console.log("Hello")
+        this.script = script;
+        this.ee = ee;
+        this.helpers = helpers;
+        this.config = script.config;
 
-    return this;
-}
+        this.config.processor = this.config.processor || {};
+    }
 
-NatsEngine.prototype.createScenario = function createScenario(scenarioSpec, ee) {
+    createScenario(scenarioSpec, ee) {
 
-    const beforeScenarioFns = _.map(
-        scenarioSpec.beforeScenario,
-        function (hookFunctionName) {
-            return {'function': hookFunctionName};
-        });
+        const beforeScenarioFunctions = _.map(scenarioSpec.beforeScenario, functionName => ({'function': functionName}));
+        const afterScenarioFunctions = _.map(scenarioSpec.afterScenario, functionName => ({'function': functionName}));
 
-    const afterScenarioFns = _.map(
-        scenarioSpec.afterScenario,
-        function (hookFunctionName) {
-            return {'function': hookFunctionName};
-        });
+        scenarioSpec.flow = beforeScenarioFunctions.concat(scenarioSpec.flow.concat(afterScenarioFunctions));
 
-    const newFlow = beforeScenarioFns.concat(
-        scenarioSpec.flow.concat(afterScenarioFns));
+        const tasks = scenarioSpec.flow.map(rs => this.step(rs, ee, {
+            beforeRequest: scenarioSpec.beforeRequest,
+            afterResponse: scenarioSpec.afterResponse,
+        }));
 
-    scenarioSpec.flow = newFlow;
+        return this.compile(tasks, scenarioSpec.flow, ee);
+    }
 
-    const tasks = scenarioSpec.flow.map(rs => this.step(rs, ee, {
-        beforeRequest: scenarioSpec.beforeRequest,
-        afterResponse: scenarioSpec.afterResponse,
-    }));
+    step(rs, ee, opts) {
+        opts = opts || {};
 
-    return this.compile(tasks, scenarioSpec.flow, ee);
-};
+        if (rs.log) {
+            return this.createLogHandler(rs, ee, opts)
+        } else if (rs.think) {
+            return this.createThinkHandler(rs, ee, opts)
+        } else if (rs.function) {
+            return this.createFunctionHandler(rs, ee, opts)
+        } else if (rs.pub) {
+            return this.createPubHandler(rs, ee, opts)
+        } else if (rs.req) {
+            return this.createReqHandler(rs, ee, opts)
+        }
 
-NatsEngine.prototype.step = function step(rs, ee, opts) {
-    opts = opts || {};
-    let self = this;
 
-    if (rs.log) {
-        return function log(context, callback) {
+        return function (context, callback) {
+            return callback(null, context);
+        };
+    }
+
+    createLogHandler(rs, ee, opts) {
+        return (context, callback) => {
             return process.nextTick(function () {
                 callback(null, context);
             });
         };
     }
 
-    if (rs.think) {
-        return this.helpers.createThink(rs, _.get(self.config, 'defaults.think', {}));
+    createThinkHandler(rs, ee, opts) {
+        return this.helpers.createThink(rs, _.get(this.config, 'defaults.think', {}));
     }
 
-    if (rs.function) {
-        return function (context, callback) {
-            let func = self.config.processor[rs.function];
+    createFunctionHandler(rs, ee, opts) {
+        return (context, callback) => {
+            let func = this.config.processor[rs.function];
             if (!func) {
                 return process.nextTick(function () {
                     callback(null, context);
@@ -84,15 +88,12 @@ NatsEngine.prototype.step = function step(rs, ee, opts) {
         };
     }
 
-    if (rs.pub) {
+    createPubHandler(rs, ee, opts) {
+        return (context, callback) => {
 
-        return function pub(context, callback) {
-
-            context.funcs.$increment = self.$increment;
-            context.funcs.$decrement = self.$decrement;
-            context.funcs.$contextUid = function () {
-                return context._uid;
-            };
+            context.funcs.$increment = this.increment;
+            context.funcs.$decrement = this.decrement;
+            context.funcs.$contextUid = () => context._uid;
 
             const payload = typeof rs.pub.payload === 'object'
                 ? JSON.stringify(rs.pub.payload)
@@ -103,9 +104,8 @@ NatsEngine.prototype.step = function step(rs, ee, opts) {
                 Subject: rs.pub.subject
             };
 
-            // build object to pass to hooks
-            // we do not pass only pub params but also additional information
-            // we need to make the engine work with other plugins
+            // construct and keep all params to pass it to hooks
+            // so that plugins can use it if needed
             const params = _.assign({
                 url: rs.pub.payload,
                 pubParams: pubParams,
@@ -114,8 +114,8 @@ NatsEngine.prototype.step = function step(rs, ee, opts) {
 
             const beforeRequestFunctionNames = _.concat(opts.beforeRequest || [], rs.pub.beforeRequest || []);
 
-            utils.processBeforeRequestFunctions(
-                self.script,
+            NatsEngineUtils.executeBeforeRequestFunctions(
+                this.script,
                 beforeRequestFunctionNames,
                 params,
                 context,
@@ -135,88 +135,72 @@ NatsEngine.prototype.step = function step(rs, ee, opts) {
                     pubParams.Payload = helpers.template(payload, context);
 
                     try {
-                        console.log("Publishing to: " + pubParams.Subject)
-                        console.log("Message: " + pubParams.Payload)
+                        debug("Publishing to: [" + pubParams.Subject + "] Message: [" + pubParams.Payload + "]")
                         context.nc.publish(pubParams.Subject, context.sc.encode(pubParams.Payload))
-                        console.log("Published: " + pubParams.Payload)
+                        debug("Published")
 
                         context.nc.flush().then((value) => {
-                            console.log("Flushed: " + value)
                             const endedAt = process.hrtime(startedAt);
+
                             let delta = (endedAt[0] * 1e9) + endedAt[1];
                             const code = 0
                             ee.emit('response', delta, code, context._uid);
 
-                            const response = {
-                                body: null,
-                                statusCode: 200,
-                                headers: {},
-                            };
-
-                            helpers.captureOrMatch(
-                                params,
-                                response,
-                                context,
-                                function captured(err, result) {
-                                    if (result && result.captures) {
-                                        // TODO handle matches
-                                        let haveFailedCaptures = _.some(result.captures, function (v, k) {
-                                            return v === '';
+                            const response = NatsEngineUtils.emptyResponse();
+                            const captureDoneCallback = (err, result) => {
+                                if (result && result.captures) {
+                                    // TODO handle matches
+                                    let haveFailedCaptures = _.some(result.captures, (v, k) => v === '');
+                                    if (!haveFailedCaptures) {
+                                        _.each(result.captures, function (v, k) {
+                                            _.set(context.vars, k, v);
                                         });
-
-                                        if (!haveFailedCaptures) {
-                                            _.each(result.captures, function (v, k) {
-                                                _.set(context.vars, k, v);
-                                            });
-                                        }
                                     }
-
-                                    const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.pub.afterResponse || []);
-
-                                    utils.processAfterResponseFunctions(
-                                        self.script,
-                                        afterResponseFunctionNames,
-                                        params,
-                                        response,
-                                        context,
-                                        ee,
-                                        function done(err) {
-                                            if (err) {
-                                                debug(err);
-                                                return callback(err, context);
-                                            }
-
-                                            return callback(null, context);
-                                        }
-                                    );
                                 }
-                            );
+
+                                const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.pub.afterResponse || []);
+                                NatsEngineUtils.executeAfterResponseFunctions(
+                                    this.script,
+                                    afterResponseFunctionNames,
+                                    params,
+                                    response,
+                                    context,
+                                    ee,
+                                    (err) => {
+                                        if (err) {
+                                            debug(err);
+                                            return callback(err, context);
+                                        }
+
+                                        return callback(null, context);
+                                    }
+                                )
+                            }
+
+                            helpers.captureOrMatch(params, response, context, captureDoneCallback);
                         }).catch((err) => {
-                            console.log("Flush Error: " + err)
-                            debug(err);
+                            debug("Failed to flush: " + err)
                             ee.emit('error', err);
                             return callback(err, context);
                         })
                     } catch (err) {
-                        console.log("Publish Error: " + err)
-                        debug(err);
+                        debug("Failed to publish: " + err);
                         ee.emit('error', err);
                         return callback(err, context);
                     }
                 }
             )
-        };
+        }
     }
 
-    if (rs.req) {
+    createReqHandler(rs, ee, opts) {
+        console.log("Request handler")
 
-        return function req(context, callback) {
+        return (context, callback) => {
 
-            context.funcs.$increment = self.$increment;
-            context.funcs.$decrement = self.$decrement;
-            context.funcs.$contextUid = function () {
-                return context._uid;
-            };
+            context.funcs.$increment = this.increment;
+            context.funcs.$decrement = this.decrement;
+            context.funcs.$contextUid = () => context._uid;
 
             const payload = typeof rs.req.payload === 'object'
                 ? JSON.stringify(rs.req.payload)
@@ -229,9 +213,8 @@ NatsEngine.prototype.step = function step(rs, ee, opts) {
                 Headers: rs.req.headers || {}
             };
 
-            // build object to pass to hooks
-            // we do not pass only pub params but also additional information
-            // we need to make the engine work with other plugins
+            // construct and keep all params to pass it to hooks
+            // so that plugins can use it if needed
             const params = _.assign({
                 url: rs.req.payload,
                 pubParams: pubParams,
@@ -240,8 +223,8 @@ NatsEngine.prototype.step = function step(rs, ee, opts) {
 
             const beforeRequestFunctionNames = _.concat(opts.beforeRequest || [], rs.req.beforeRequest || []);
 
-            utils.processBeforeRequestFunctions(
-                self.script,
+            NatsEngineUtils.executeBeforeRequestFunctions(
+                this.script,
                 beforeRequestFunctionNames,
                 params,
                 context,
@@ -255,155 +238,124 @@ NatsEngine.prototype.step = function step(rs, ee, opts) {
                     ee.emit('request');
                     const startedAt = process.hrtime();
 
-                    // after running beforeRequest functions
-                    // the context could have changed
-                    // we need to rerun template on payload
-                    pubParams.Payload = helpers.template(payload, context);
+                    console.log("Requesting to: " + pubParams.Subject)
+                    console.log("Message: " + pubParams.Payload)
+
+                    const natsHeaders = nats.headers()
+                    Object.keys(pubParams.Headers).forEach(k => {
+                        natsHeaders.append(k, pubParams.Headers[k])
+                    })
+
+                    const requestOptions = {
+                        timeout: pubParams.Timeout,
+                        headers: natsHeaders
+                    }
 
                     try {
-                        console.log("Requesting to: " + pubParams.Subject)
-                        console.log("Message: " + pubParams.Payload)
-
-                        const natsHeaders = nats.headers()
-                        Object.keys(pubParams.Headers).forEach(k => {
-                            natsHeaders.append(k, pubParams.Headers[k])
-                        })
-
-                        const requestOptions = {
-                            timeout: pubParams.Timeout,
-                            headers: natsHeaders
-                        }
-
+                        console.log("Requesting to: [" + pubParams.Subject + "] Message: [" + pubParams.Payload + "]")
                         context.nc.request(pubParams.Subject, context.sc.encode(pubParams.Payload), requestOptions).then((msg) => {
+                            const endedAt = process.hrtime(startedAt);
 
                             const decodedResponse = context.sc.decode(msg.data)
-                            const parsedResponse = utils.tryToParse(decodedResponse)
-                            const endedAt = process.hrtime(startedAt);
+                            const response = NatsEngineUtils.parseSafely(decodedResponse, msg.headers)
+
                             let delta = (endedAt[0] * 1e9) + endedAt[1];
                             const code = 0
                             ee.emit('response', delta, code, context._uid);
 
-                            const response = {
-                                body: parsedResponse.body,
-                                statusCode: 200,
-                                headers: {
-                                    contentType: parsedResponse.contentType
-                                },
-                            };
-
                             console.log("Response: " + JSON.stringify(response))
-
-                            helpers.captureOrMatch(
-                                params,
-                                response,
-                                context,
-                                function captured(err, result) {
-                                    if (result && result.captures) {
-                                        // TODO handle matches
-                                        let haveFailedCaptures = _.some(result.captures, function (v, k) {
-                                            return v === '';
+                            const captureDoneCallback = (err, result) => {
+                                if (result && result.captures) {
+                                    // TODO handle matches
+                                    let haveFailedCaptures = _.some(result.captures, (v, k) => v === '');
+                                    if (!haveFailedCaptures) {
+                                        _.each(result.captures, function (v, k) {
+                                            _.set(context.vars, k, v);
                                         });
-
-                                        if (!haveFailedCaptures) {
-                                            _.each(result.captures, function (v, k) {
-                                                _.set(context.vars, k, v);
-                                            });
-                                        }
                                     }
-
-                                    const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.req.afterResponse || []);
-
-                                    utils.processAfterResponseFunctions(
-                                        self.script,
-                                        afterResponseFunctionNames,
-                                        params,
-                                        response,
-                                        context,
-                                        ee,
-                                        function done(err) {
-                                            if (err) {
-                                                debug(err);
-                                                return callback(err, context);
-                                            }
-
-                                            return callback(null, context);
-                                        }
-                                    );
                                 }
-                            );
 
+                                const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.req.afterResponse || []);
+                                NatsEngineUtils.executeAfterResponseFunctions(
+                                    this.script,
+                                    afterResponseFunctionNames,
+                                    params,
+                                    response,
+                                    context,
+                                    ee,
+                                    (err) => {
+                                        if (err) {
+                                            debug(err);
+                                            return callback(err, context);
+                                        }
+
+                                        return callback(null, context);
+                                    }
+                                )
+                            }
+
+                            helpers.captureOrMatch(params, response, context, captureDoneCallback);
                         }).catch((err) => {
-                            console.log("Flush Error: " + err)
-                            debug(err);
                             ee.emit('error', err);
                             return callback(err, context);
                         })
                     } catch (err) {
-                        console.log("Request Error: " + err)
-                        debug(err);
+                        debug("Failed to request: " + err);
                         ee.emit('error', err);
                         return callback(err, context);
                     }
                 }
             )
+        }
+    }
+
+    compile(tasks, scenarioSpec, ee) {
+        return (initialContext, callback) => {
+            const init = (next) => {
+                debug("Initializing nats connection")
+
+                let natsOptions = {
+                    server: this.script.config.natspre.server || 'demo.nats.io:4222'
+                };
+
+                if (this.script.config.natspre.subject) {
+                    natsOptions.subject = this.script.config.natspre.subject;
+                }
+
+                nats.connect({servers: natsOptions.server}).then((nc) => {
+                    debug("Successfully established nats connection")
+
+                    initialContext.sc = nats.StringCodec();
+                    initialContext.nc = nc
+                    ee.emit('started');
+
+                    return next(null, initialContext);
+                }).catch((err) => {
+                    console.log("Error")
+                    ee.emit('error', err);
+                })
+            };
+
+            let steps = [init].concat(tasks);
+
+            A.waterfall(
+                steps,
+                function done(err, context) {
+                    if (err) {
+                        debug(err);
+                    }
+                    return callback(err, context);
+                });
         };
     }
 
+    increment(value) {
+        return Number.isInteger(value) ? value + 1 : NaN;
+    }
 
-    return function (context, callback) {
-        return callback(null, context);
-    };
-};
+    decrement(value) {
+        return Number.isInteger(value) ? value - 1 : NaN;
+    }
+}
 
-NatsEngine.prototype.compile = function compile(tasks, scenarioSpec, ee) {
-    const self = this;
-    return function scenario(initialContext, callback) {
-        const init = function init(next) {
-            console.log("Connecting")
-
-            let opts = {
-                server: self.script.config.natspre.server || 'demo.nats.io:4222'
-            };
-
-            if (self.script.config.natspre.subject) {
-                opts.subject = self.script.config.natspre.subject;
-            }
-
-            nats.connect({servers: opts.server}).then((nc) => {
-                console.log("Connected")
-
-                initialContext.nc = nc
-                initialContext.sc = nats.StringCodec();
-
-                ee.emit('started');
-                return next(null, initialContext);
-            }).catch((err) => {
-                console.log("Error")
-                ee.emit('error', err);
-            })
-        };
-
-        let steps = [init].concat(tasks);
-
-        A.waterfall(
-            steps,
-            function done(err, context) {
-                if (err) {
-                    debug(err);
-                }
-
-                return callback(err, context);
-            });
-    };
-};
-
-NatsEngine.prototype.$increment = function $increment(value) {
-    return Number.isInteger(value) ? value += 1 : NaN;
-};
-
-NatsEngine.prototype.$decrement = function $decrement(value) {
-    return Number.isInteger(value) ? value -= 1 : NaN;
-};
-
-console.log("123")
-module.exports = NatsEngine;
+module.exports = NatsPreEngine;
