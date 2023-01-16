@@ -13,6 +13,9 @@ const nats = require('nats')
 const NatsEngineUtils = require('./utils');
 
 
+const CAPTURE_AND_MATCH_FUNC_NAME = 'captureAndMatchAsAfterResponseHandler'
+
+
 class NatsPreEngine {
     constructor(script, ee) {
         debug("Instantiating NatsPreEngine")
@@ -23,6 +26,7 @@ class NatsPreEngine {
         this.config = script.config;
 
         this.config.processor = this.config.processor || {};
+        this.config.processor[CAPTURE_AND_MATCH_FUNC_NAME] = NatsEngineUtils.captureAndMatchFunction
     }
 
     createScenario(scenarioSpec, ee) {
@@ -204,10 +208,7 @@ class NatsPreEngine {
             context.funcs.$decrement = this.decrement;
             context.funcs.$contextUid = () => context._uid;
 
-            const payload = typeof rs.req.payload === 'object'
-                ? JSON.stringify(rs.req.payload)
-                : String(rs.req.payload);
-
+            const payload = rs.req.payload
             const pubParams = {
                 Payload: helpers.template(payload, context),
                 Subject: rs.req.subject,
@@ -223,7 +224,7 @@ class NatsPreEngine {
             }, rs.req);
 
 
-            const beforeRequestFunctionNames = _.concat(opts.beforeRequest || [], rs.req.beforeRequest || []);
+            const beforeRequestFunctionNames = _.concat(rs.req.requestEncoder || [], opts.beforeRequest || [], rs.req.beforeRequest || []);
 
             NatsEngineUtils.executeBeforeRequestFunctions(
                 this.script,
@@ -259,7 +260,7 @@ class NatsPreEngine {
                             const endedAt = process.hrtime(startedAt);
 
                             const decodedResponse = context.sc.decode(msg.data)
-                            const response = NatsEngineUtils.parseSafely(decodedResponse, msg.headers)
+                            const response = NatsEngineUtils.parseSafely(msg.data, msg.headers)
 
                             let delta = (endedAt[0] * 1e9) + endedAt[1];
                             let deltaMillis = delta / 1000000
@@ -268,41 +269,30 @@ class NatsPreEngine {
                             ee.emit('histogram', pubParams.Subject + '_latency', deltaMillis)
 
                             debug("Response: " + JSON.stringify(response))
-                            const captureDoneCallback = (err, result) => {
-                                if (result && result.captures) {
-                                    debug("Capture: " + JSON.stringify(result))
-                                    if (result.captures) {
-                                        Object.keys(result.captures).forEach((k) => {
-                                            if (result.captures[k] && !result.captures[k]['failed']) {
-                                                _.set(context.vars, k, result.captures[k]['value'])
-                                            }
-                                        })
+
+                            const afterResponseFunctionNames = _.concat(
+                                rs.req.responseDecoder || [],
+                                CAPTURE_AND_MATCH_FUNC_NAME,
+                                opts.afterResponse || [],
+                                rs.req.afterResponse || []
+                            );
+
+                            NatsEngineUtils.executeAfterResponseFunctions(
+                                this.script,
+                                afterResponseFunctionNames,
+                                params,
+                                response,
+                                context,
+                                ee,
+                                (err) => {
+                                    if (err) {
+                                        debug(err);
+                                        return callback(err, context);
                                     }
 
-                                    // FIXME Handle failed captures
-                                    // TODO matches
+                                    return callback(null, context);
                                 }
-
-                                const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.req.afterResponse || []);
-                                NatsEngineUtils.executeAfterResponseFunctions(
-                                    this.script,
-                                    afterResponseFunctionNames,
-                                    params,
-                                    response,
-                                    context,
-                                    ee,
-                                    (err) => {
-                                        if (err) {
-                                            debug(err);
-                                            return callback(err, context);
-                                        }
-
-                                        return callback(null, context);
-                                    }
-                                )
-                            }
-
-                            helpers.captureOrMatch(params, response, context, captureDoneCallback);
+                            )
                         }).catch((err) => {
                             ee.emit('error', err);
                             return callback(err, context);

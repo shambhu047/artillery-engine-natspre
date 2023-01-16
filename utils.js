@@ -1,5 +1,6 @@
 const async = require('async');
 const helpers = require('artillery/core/lib/engine_util');
+const _ = require("lodash");
 
 
 class NatsEngineUtils {
@@ -56,6 +57,28 @@ class NatsEngineUtils {
         }
     }
 
+    static captureAndMatchFunction(requestParams, response, context, ee, next) {
+        console.log("Inside CaptureAndMatchFunction")
+
+        const captureDoneCallback = (err, result) => {
+            if (result && result.captures) {
+                console.log("Capture: " + JSON.stringify(result))
+                if (result.captures) {
+                    Object.keys(result.captures).forEach((k) => {
+                        if (result.captures[k] && !result.captures[k]['failed']) {
+                            _.set(context.vars, k, result.captures[k]['value'])
+                        }
+                    })
+                }
+                // FIXME Handle failed captures
+                // TODO matches
+            }
+            return next()
+        }
+
+        return helpers.captureOrMatch(requestParams, response, context, captureDoneCallback);
+    }
+
     static parseSafely(data, headers, statusCode = 200) {
         const parsedData = {
             body: data,
@@ -71,10 +94,12 @@ class NatsEngineUtils {
             })
         }
 
-        try {
-            parsedData.body = JSON.parse(data);
-            parsedData.headers['content-type'] = 'application/json'
-        } catch (e) {
+        if (typeof data === 'string') {
+            try {
+                parsedData.body = JSON.parse(data);
+                parsedData.headers['content-type'] = 'application/json'
+            } catch (e) {
+            }
         }
 
         return parsedData;
