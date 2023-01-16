@@ -258,13 +258,12 @@ class NatsPreEngine {
                         debug("Requesting to: [" + pubParams.Subject + "] Message: [" + pubParams.Payload + "]")
                         context.nc.request(pubParams.Subject, context.sc.encode(pubParams.Payload), requestOptions).then((msg) => {
                             const endedAt = process.hrtime(startedAt);
-
-                            const decodedResponse = context.sc.decode(msg.data)
                             const response = NatsEngineUtils.parseSafely(msg.data, msg.headers)
 
                             let delta = (endedAt[0] * 1e9) + endedAt[1];
                             let deltaMillis = delta / 1000000
                             const code = 0
+
                             ee.emit('response', delta, code, context._uid);
                             ee.emit('histogram', pubParams.Subject + '_latency', deltaMillis)
 
