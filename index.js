@@ -99,10 +99,7 @@ class NatsPreEngine {
             context.funcs.$decrement = this.decrement;
             context.funcs.$contextUid = () => context._uid;
 
-            const payload = typeof rs.pub.payload === 'object'
-                ? JSON.stringify(rs.pub.payload)
-                : String(rs.pub.payload);
-
+            const payload = rs.pub.payload
             const pubParams = {
                 Payload: helpers.template(payload, context),
                 Subject: rs.pub.subject
@@ -115,8 +112,11 @@ class NatsPreEngine {
                 pubParams: pubParams,
             }, rs.pub);
 
-
-            const beforeRequestFunctionNames = _.concat(opts.beforeRequest || [], rs.pub.beforeRequest || []);
+            const beforeRequestFunctionNames = _.concat(
+                rs.pub.requestEncoder || [],
+                opts.beforeRequest || [],
+                rs.pub.beforeRequest || []
+            );
 
             NatsEngineUtils.executeBeforeRequestFunctions(
                 this.script,
@@ -133,59 +133,37 @@ class NatsPreEngine {
                     ee.emit('request');
                     const startedAt = process.hrtime();
 
-                    // after running beforeRequest functions
-                    // the context could have changed
-                    // we need to rerun template on payload
-                    pubParams.Payload = helpers.template(payload, context);
-
                     try {
+
                         debug("Publishing to: [" + pubParams.Subject + "] Message: [" + pubParams.Payload + "]")
                         context.nc.publish(pubParams.Subject, context.sc.encode(pubParams.Payload))
                         debug("Published")
 
                         context.nc.flush().then((value) => {
                             const endedAt = process.hrtime(startedAt);
-
                             let delta = (endedAt[0] * 1e9) + endedAt[1];
                             const code = 0
+
                             ee.emit('response', delta, code, context._uid);
-
                             const response = NatsEngineUtils.emptyResponse();
-                            const captureDoneCallback = (err, result) => {
-                                if (result && result.captures) {
-                                    debug("Capture: " + JSON.stringify(result))
-                                    if (result.captures) {
-                                        Object.keys(result.captures).forEach((k) => {
-                                            if (result.captures[k] && !result.captures[k]['failed']) {
-                                                _.set(context.vars, k, result.captures[k]['value'])
-                                            }
-                                        })
+
+                            const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.pub.afterResponse || []);
+                            NatsEngineUtils.executeAfterResponseFunctions(
+                                this.script,
+                                afterResponseFunctionNames,
+                                params,
+                                response,
+                                context,
+                                ee,
+                                (err) => {
+                                    if (err) {
+                                        debug(err);
+                                        return callback(err, context);
                                     }
 
-                                    // FIXME Handle failed captures
-                                    // TODO matches
+                                    return callback(null, context);
                                 }
-
-                                const afterResponseFunctionNames = _.concat(opts.afterResponse || [], rs.pub.afterResponse || []);
-                                NatsEngineUtils.executeAfterResponseFunctions(
-                                    this.script,
-                                    afterResponseFunctionNames,
-                                    params,
-                                    response,
-                                    context,
-                                    ee,
-                                    (err) => {
-                                        if (err) {
-                                            debug(err);
-                                            return callback(err, context);
-                                        }
-
-                                        return callback(null, context);
-                                    }
-                                )
-                            }
-
-                            helpers.captureOrMatch(params, response, context, captureDoneCallback);
+                            )
                         }).catch((err) => {
                             debug("Failed to flush: " + err)
                             ee.emit('error', err);

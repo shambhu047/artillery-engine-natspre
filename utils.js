@@ -58,11 +58,8 @@ class NatsEngineUtils {
     }
 
     static captureAndMatchFunction(requestParams, response, context, ee, next) {
-        console.log("Inside CaptureAndMatchFunction")
-
         const captureDoneCallback = (err, result) => {
             if (result && result.captures) {
-                console.log("Capture: " + JSON.stringify(result))
                 if (result.captures) {
                     Object.keys(result.captures).forEach((k) => {
                         if (result.captures[k] && !result.captures[k]['failed']) {
