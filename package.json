@@ -1,6 +1,6 @@
 {
   "name": "artillery-engine-natspre",
-  "version": "1.0.1-b32",
+  "version": "1.0.1-b33",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -17,9 +17,8 @@
   },
   "homepage": "https://github.com/shambhu047/artillery-engine-natspre#readme",
   "dependencies": {
-    "artillery": "^1.6.0-29",
+    "artillery": "2.0.0-27",
     "async": "^1.5.2",
-    "aws-sdk": "^2.280.1",
     "debug": "^2.6.6",
     "lodash": "^4.17.13",
     "nats": "^2.10.2"
